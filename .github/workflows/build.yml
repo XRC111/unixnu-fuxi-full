@@ -105,7 +105,12 @@ jobs:
         run: ./unixnu defconfig fuxi_full_defconfig --device "$GITHUB_WORKSPACE/fuxi"
       - name: Fetch the OS and SystemOS windows
         working-directory: unixnu
-        run: ./unixnu fetch OS "Cryptex1,SystemOS" --device "$GITHUB_WORKSPACE/fuxi"
+        run: |
+          # 'ipsw fetch', not 'fetch': the plain fetch command updates module submodules and git sources,
+          # accepts no component names, and silently does nothing with "OS Cryptex1,SystemOS". The windows
+          # land in out/<device>/ipsw/21H461, which is where build-fuxi-verified-root-policy.py reads them.
+          ./unixnu ipsw fetch OS "Cryptex1,SystemOS" --device "$GITHUB_WORKSPACE/fuxi"
+          ls -l "out/fuxi/ipsw/21H461"
       - name: Name the prelink kit the way the builders expect
         working-directory: unixnu
         run: |
