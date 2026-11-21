@@ -151,7 +151,9 @@ jobs:
           cat "$report"
           echo "UNIXNU_PAYLOAD_REPORT=$report" >> "$GITHUB_ENV"
         env:
-          BRINGUP_SEED: 0x0123456789abcdef
+          # Quoted: unquoted 0x0123456789abcdef is parsed as a 64-bit YAML integer, and the value overflows
+          # that type, which makes the whole workflow file invalid before any job is created.
+          BRINGUP_SEED: "0x0123456789abcdef"
       - name: Build firmware
         working-directory: unixnu
         run: ./unixnu build firmware --device "$GITHUB_WORKSPACE/fuxi" --uefi "$GITHUB_WORKSPACE/uefi-fuxi" --target DEBUG
