@@ -62,25 +62,39 @@ def run(*command, ok_codes=(0,)):
     return result.stdout
 
 
+def tool_path(name: str) -> str:
+    """Resolve a system tool by PATH, then by the directories macOS keeps them in.
+
+    shutil.which alone is not enough on a runner: newfs_apfs lives in /sbin, and a step that assigns PATH
+    without it (the Homebrew prepend here does exactly that) makes a present tool look absent.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+    for directory in ('/sbin', '/usr/sbin', '/bin', '/usr/bin'):
+        candidate = Path(directory) / name
+        if candidate.is_file():
+            return str(candidate)
+    raise SystemExit(f'{name} not found in PATH or /sbin, /usr/sbin, /bin, /usr/bin')
+
+
 def make_with_hdiutil(raw: Path, size: int) -> str:
     """Format a fresh APFS container and read its bytes back. Returns how it was made."""
-    if not shutil.which('hdiutil'):
-        raise SystemExit('hdiutil not found; this is the macOS path, or pass --mkapfs on Linux')
-    # newfs_apfs is the formatter this sequence drives. Checking it here names the missing tool instead of
-    # letting the subprocess fail with a bare "command not found", which the log would attribute to hdiutil.
-    for tool in ('newfs_apfs', 'dd'):
-        if not shutil.which(tool):
-            raise SystemExit(f'{tool} not found; the macOS seed path needs hdiutil, newfs_apfs and dd')
+    hdiutil = tool_path('hdiutil')
+    # newfs_apfs is the formatter this sequence drives. Naming it here beats a bare "command not found"
+    # from a subprocess three steps later, which the log would attribute to hdiutil.
+    newfs = tool_path('newfs_apfs')
+    dd = tool_path('dd')
 
     # Step 1: an empty read/write UDIF image, no filesystem yet. -format already implies UDIF, and hdiutil
     # refuses "-format and -type cannot both be specified", which is what the second attempt failed on.
     image = raw.with_suffix('.dmg')
-    run('hdiutil', 'create', '-size', f'{size // MIB}m', '-format', 'UDRW', '-layout', 'NONE', '-ov',
+    run(hdiutil, 'create', '-size', f'{size // MIB}m', '-format', 'UDRW', '-layout', 'NONE', '-ov',
         str(image))
 
     # Step 2: attach it, write the APFS container onto it, detach. newfs_apfs is hdiutil's own formatter and
     # produces exactly what the kernel and mount_apfs expect.
-    attached = run('hdiutil', 'attach', '-nomount', '-nobrowse', '-noverify', str(image))
+    attached = run(hdiutil, 'attach', '-nomount', '-nobrowse', '-noverify', str(image))
     device = None
     for line in attached.split('\n'):
         match = re.match(r'(/dev/disk\d+)', line.strip())
@@ -92,17 +106,17 @@ def make_with_hdiutil(raw: Path, size: int) -> str:
 
     try:
         # Format the whole device. APFS is case-insensitive by default, which is what a Data volume is.
-        run('newfs_apfs', '-v', LABEL, device)
+        run(newfs, '-v', LABEL, device)
         # Read the bytes back through the raw character device. The size is the whole container, so a dd of
         # the device yields exactly `size` bytes; a timing out dd is a real failure, not a partial success.
         source = '/dev/r' + device.split('/')[-1]
         result = subprocess.run(
-            ['dd', f'if={source}', f'of={raw}', f'bs={MIB}', f'count={size // MIB}'],
+            [dd, f'if={source}', f'of={raw}', f'bs={MIB}', f'count={size // MIB}'],
             capture_output=True, text=True)
         if result.returncode:
             raise SystemExit(f'dd from {source} failed ({result.returncode}):\n{result.stderr}')
     finally:
-        subprocess.run(['hdiutil', 'detach', device, '-force'], capture_output=True)
+        subprocess.run([hdiutil, 'detach', device, '-force'], capture_output=True)
 
     if raw.stat().st_size != size:
         raise SystemExit(f'the raw copy is {raw.stat().st_size} bytes, not the {size} requested')
