@@ -78,7 +78,7 @@ def tool_path(name: str) -> str:
     raise SystemExit(f'{name} not found in PATH or /sbin, /usr/sbin, /bin, /usr/bin')
 
 
-def make_with_hdiutil(raw: Path, size: int) -> str:
+def make_with_hdiutil(raw: Path, size: int, volume_uuid: str) -> str:
     """Format a fresh APFS container and read its bytes back. Returns how it was made."""
     hdiutil = tool_path('hdiutil')
     # newfs_apfs is the formatter this sequence drives. Naming it here beats a bare "command not found"
@@ -105,8 +105,10 @@ def make_with_hdiutil(raw: Path, size: int) -> str:
         raise SystemExit(f'hdiutil attach did not name a device:\n{attached}')
 
     try:
-        # Format the whole device. APFS is case-insensitive by default, which is what a Data volume is.
-        run(newfs, '-v', LABEL, device)
+        # Format the whole device, pinning the volume UUID the kernel will look for. APFS is
+        # case-insensitive by default, which is what a Data volume is. Without -u newfs_apfs
+        # generates a random UUID and the kernel never finds the volume it just mounted.
+        run(newfs, '-v', LABEL, '-u', volume_uuid, device)
         # Read the bytes back through the raw character device. The size is the whole container, so a dd of
         # the device yields exactly `size` bytes; a timing out dd is a real failure, not a partial success.
         source = '/dev/r' + device.split('/')[-1]
@@ -162,7 +164,7 @@ def main() -> int:
         if args.mkapfs:
             method = make_with_mkapfs(raw, size, volume_uuid, container_uuid)
         else:
-            method = make_with_hdiutil(raw, size)
+            method = make_with_hdiutil(raw, size, volume_uuid)
 
         data = raw.read_bytes()
         if data[32:36] != b'NXSB':
