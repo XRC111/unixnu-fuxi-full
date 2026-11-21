@@ -67,7 +67,11 @@ jobs:
           repository: ${{ env.UEFI_REPO }}
           ref: ${{ env.UEFI_REF }}
           path: uefi-fuxi
-          submodules: recursive
+          # Not recursive: this repository's submodules include microsoft/mu_plus, mu_basecore and
+          # openssl/openssl, which together dwarf what the firmware build needs, and pulling them made the
+          # checkout step stall for minutes. board.toml [firmware] submodules names the four the build
+          # actually reads, and the firmware step fetches those itself.
+          submodules: false
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
