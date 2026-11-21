@@ -141,18 +141,6 @@ jobs:
             echo "linked kits/NativePrelink -> XnuPrelink"
           fi
           ls -l "$tree/kits" | head -n 20
-      - name: Restore the fetched sources
-        id: feeds-cache
-        uses: actions/cache@v4
-        with:
-          # out/feeds holds the shallow clones of xnu, libplatform, libdispatch, corecrypto and the rest. They
-          # are pinned by feeds.toml and board.toml, so a changed ref is a different key.
-          path: |
-            unixnu/out/feeds
-            unixnu/out/*/tree/.cache/sources
-            unixnu/out/*/tree/.cache/firmware
-          key: feeds-${{ hashFiles('fuxi/feeds.toml', 'fuxi/board.toml') }}
-          enableCrossOsArchive: true
       - name: Build kernel
         working-directory: unixnu
         # GITHUB_TOKEN reaches prepare-xnu-source.py, which restores the DriverKit headers newer xnu omits
