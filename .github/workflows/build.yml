@@ -30,6 +30,12 @@ concurrency:
   group: build-main
   cancel-in-progress: false
 
+# Read access to the repository is all the build needs, but the token also has to be usable against the
+# public GitHub API: prepare-xnu-source.py reads DriverKit headers from a pinned Apple tag, and without a
+# token the request goes out anonymous and hits the per-address quota.
+permissions:
+  contents: read
+
 env:
   UNIXNU_REPO: OddlyLabs/UniXNU
   # github.event.inputs, not inputs: the inputs context is only defined for a workflow_dispatch run, and a
@@ -115,6 +121,11 @@ jobs:
           ls -l "$tree/kits" | head -n 20
       - name: Build kernel
         working-directory: unixnu
+        # GITHUB_TOKEN reaches prepare-xnu-source.py, which restores the DriverKit headers newer xnu omits
+        # by reading them from a pinned Apple tag. Anonymous API calls share a small per-address quota that
+        # hosted runners exhaust, and the failure is an HTTP 403 in the middle of the bootstrap pass.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./unixnu build kernel --device "$GITHUB_WORKSPACE/fuxi"
       - name: Make the Data seed
         working-directory: unixnu
