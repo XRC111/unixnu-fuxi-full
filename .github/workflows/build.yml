@@ -2,10 +2,17 @@ name: Build
 
 # Builds the fuxi boot image from this repository's tree.
 #
-# The tree is the reference port's, with two device-specific values replaced in board.toml and the
-# defconfig: the unixnu window is this unit's 32 GiB carve (LBA 53461760..61850367) rather than the whole
-# stock userdata partition, and the Data volume UUID matches what make-data-seed.py derives for a 5 GiB
-# seed. Everything else - display, GPU, audio, touch, storage - is that port's work.
+# The tree is the reference port's, with this unit's two device-specific values: the unixnu window is the
+# 32 GiB carve at LBA 53461760..61850367 rather than the whole stock userdata partition, and the Data
+# volume UUID matches what make-data-seed.py derives for a 5 GiB seed.
+#
+# The packaging rules come from AGENTS.md and are not optional:
+#   - the payload takes --owner-trust-cache (a bundle carrying the AdrenoMetal plugin CDHashes) and
+#     --gpu-addon, not --trust-cache alone;
+#   - the boot image is made by uefi-fuxi/scripts/bootimage.py, never by `unixnu bootimg`;
+#   - four checks decide whether the result is deliverable:
+#     payload.json trust_cache_sha256, payload.json gpu_addon_sha256, the trustcache inside the payload
+#     image, and header_version 3 in bootimage.json.
 
 on:
   push:
@@ -13,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       unixnu_ref:
-        description: OddlyLabs/UniXNU ref (the fork whose catalog this tree expects)
+        description: OddlyLabs/UniXNU ref
         default: 6ae4c252937ae1920ab68eaded10fc78447e0194
       uefi_ref:
         description: OddlyLabs/uefi-fuxi ref
@@ -31,6 +38,7 @@ env:
   HOMEBREW_NO_AUTO_UPDATE: 1
   HOMEBREW_NO_INSTALL_CLEANUP: 1
   HOMEBREW_NO_ENV_HINTS: 1
+  MTOOLS_SKIP_CHECK: 1
 
 jobs:
   image:
@@ -71,7 +79,11 @@ jobs:
             brew install unifdef
             echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
           fi
-          for tool in hdiutil newfs_apfs diskutil; do command -v "$tool" || { echo "::error::missing $tool"; exit 1; }; done
+          # The Data seed formats an APFS container on this Mac; name a missing tool here rather than in a
+          # subprocess three steps later.
+          for tool in hdiutil newfs_apfs diskutil dd mdir; do
+            command -v "$tool" >/dev/null || { echo "::error::missing $tool"; exit 1; }
+          done
       - name: Select the device
         working-directory: unixnu
         run: ./unixnu defconfig fuxi_full_defconfig --device "$GITHUB_WORKSPACE/fuxi"
@@ -84,62 +96,106 @@ jobs:
       - name: Make the Data seed
         working-directory: unixnu
         run: |
-          # A 5 GiB APFS container: the 32 GiB window holds the 8.81 GiB root image, the store header and
-          # bitmap, a 1024-block guard and the 1 GiB log reserve, which leaves 6.19 GiB.
+          # 5 GiB: the 32 GiB window holds the 8.81 GiB root image, the store header and bitmap, a
+          # 1024-block guard and the 1 GiB log reserve, which leaves 6.19 GiB.
           python3 "$GITHUB_WORKSPACE/fuxi/scripts/make-data-seed.py" --gib 5 \
-            --output "$RUNNER_TEMP/data-seed.dbr" --report "$RUNNER_TEMP/data-seed.json" || {
-              echo "::warning::no generated seed; falling back to the restore ramdisk so the image still builds"
-              exit 0
-            }
+            --output "$RUNNER_TEMP/data-seed.dbr" --report "$RUNNER_TEMP/data-seed.json"
           cat "$RUNNER_TEMP/data-seed.json"
           echo "UNIXNU_DATA_RAMDISK=$RUNNER_TEMP/data-seed.dbr" >> "$GITHUB_ENV"
-      - name: Fetch the restore ramdisk, trust caches and data seed
+      - name: Fetch the restore ramdisk and the trust caches
         working-directory: unixnu
         run: |
           ./unixnu ipsw fetch RestoreRamDisk RestoreTrustCache --device "$GITHUB_WORKSPACE/fuxi"
-          if [ -z "${UNIXNU_DATA_RAMDISK:-}" ]; then
-            ramdisk=$(ls out/ipsw/*/*.dmg | head -n 1)
-            [ -n "$ramdisk" ] || { echo "::error::restore ramdisk missing"; exit 1; }
-            python3 "$GITHUB_WORKSPACE/fuxi/scripts/unpack-restore-ramdisk.py" "$ramdisk" "$RUNNER_TEMP/restore.img" \
-              --report "$RUNNER_TEMP/restore.json"
-            python3 "$GITHUB_WORKSPACE/fuxi/scripts/pack-data-ramdisk.py" "$RUNNER_TEMP/restore.img" \
-              "$RUNNER_TEMP/restore.dbr" --report "$RUNNER_TEMP/restore.dbr.json"
-            echo "UNIXNU_DATA_RAMDISK=$RUNNER_TEMP/restore.dbr" >> "$GITHUB_ENV"
-          fi
+          ramdisk=$(ls out/ipsw/*/*.dmg | head -n 1)
+          [ -n "$ramdisk" ] || { echo "::error::restore ramdisk missing"; exit 1; }
           trust=$(ls out/ipsw/*/*.dmg.trustcache | head -n 1)
           [ -n "$trust" ] || { echo "::error::restore trust cache missing"; exit 1; }
-          python3 "$GITHUB_WORKSPACE/fuxi/scripts/pack-restore-trust.py" "$trust" \
-            "$RUNNER_TEMP/kernel.macho.trustcache" --report "$RUNNER_TEMP/trust.json"
-          echo "UNIXNU_TRUST_CACHE=$RUNNER_TEMP/kernel.macho.trustcache" >> "$GITHUB_ENV"
+          echo "UNIXNU_RESTORE_RAMDISK=$ramdisk" >> "$GITHUB_ENV"
+          echo "UNIXNU_RESTORE_TRUST=$trust" >> "$GITHUB_ENV"
+      - name: Build the GPU addon
+        working-directory: unixnu
+        run: |
+          # AGENTS.md requires --gpu-addon on the payload: the kernel writes this file into the Data volume at
+          # boot, and without it the Metal plugin has nothing to load.
+          python3 scripts/make-gpu-addon.py --device "$GITHUB_WORKSPACE/fuxi" \
+            --output "$RUNNER_TEMP/fuxi-gpu-addon.ngpu"
+          ls -l "$RUNNER_TEMP/fuxi-gpu-addon.ngpu"
+          echo "UNIXNU_GPU_ADDON=$RUNNER_TEMP/fuxi-gpu-addon.ngpu" >> "$GITHUB_ENV"
+      - name: Build the owner trust bundle
+        working-directory: unixnu
+        run: |
+          # The original two Apple modules alone leave the AdrenoMetal plugin untrusted, and AMFI then stops
+          # the boot at the logo. make-owner-trust-bundle.py adds the plugin CDHashes to a bundle that keeps
+          # the original modules unchanged, which is what --owner-trust-cache has to receive.
+          out=$(./unixnu status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["output"])')
+          bundle="$out/tree/build/adreno-metal-plugin/owner-trust.bundle"
+          mkdir -p "$(dirname "$bundle")"
+          base=$(find "$out" -name 'original-static-system.bundle' | head -n 1)
+          [ -n "$base" ] || { echo "::error::original trust bundle missing; build the payload once first"; exit 1; }
+          cp "$base" "$(dirname "$bundle")/original-static-system.bundle"
+          ( cd "$out/tree" && python3 scripts/make-owner-trust-bundle.py )
+          [ -f "$bundle" ] || { echo "::error::owner trust bundle was not produced"; exit 1; }
+          echo "UNIXNU_OWNER_TRUST=$bundle" >> "$GITHUB_ENV"
       - name: Build payload
         working-directory: unixnu
         run: |
           ./unixnu build payload --device "$GITHUB_WORKSPACE/fuxi" --uefi "$GITHUB_WORKSPACE/uefi-fuxi" \
-            --unique-chip-id "$BRINGUP_SEED" --trust-cache "$UNIXNU_TRUST_CACHE" \
-            --data-ramdisk "$UNIXNU_DATA_RAMDISK" --skip-setup
-          cat "$(find out -path '*/payload/payload.json' | head -n 1)"
+            --unique-chip-id "$BRINGUP_SEED" \
+            --owner-trust-cache "$UNIXNU_OWNER_TRUST" \
+            --data-ramdisk "$UNIXNU_DATA_RAMDISK" \
+            --gpu-addon "$UNIXNU_GPU_ADDON" \
+            --skip-setup
+          report=$(find out -path '*/payload/payload.json' | head -n 1)
+          cat "$report"
+          echo "UNIXNU_PAYLOAD_REPORT=$report" >> "$GITHUB_ENV"
         env:
           BRINGUP_SEED: 0x0123456789abcdef
       - name: Build firmware
         working-directory: unixnu
         run: ./unixnu build firmware --device "$GITHUB_WORKSPACE/fuxi" --uefi "$GITHUB_WORKSPACE/uefi-fuxi" --target DEBUG
       - name: Pack the boot image
-        working-directory: unixnu
         run: |
+          # bootimage.py, not `unixnu bootimg`: the rules require header_version 3, and this is the generator
+          # that writes it.
+          out=$(cd unixnu && ./unixnu status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["output"])')
           mkdir -p "$RUNNER_TEMP/image"
-          ./unixnu bootimg --device "$GITHUB_WORKSPACE/fuxi" --uefi "$GITHUB_WORKSPACE/uefi-fuxi" --target DEBUG \
-            --dtb "$GITHUB_WORKSPACE/uefi-fuxi/Platforms/Xiaomi/fuxiPkg/FdtBlob/sm8550-xiaomi-fuxi.dtb" \
+          python3 uefi-fuxi/scripts/bootimage.py \
+            --ramdisk "$out/payload/payload.img" \
             -o "$RUNNER_TEMP/image/boot.img"
-          cat "$RUNNER_TEMP/image/boot.json"
+          cat "$out/boot/bootimage.json" 2>/dev/null || true
+          ls -l "$RUNNER_TEMP/image/boot.img"
+      - name: Check the deliverable
+        run: |
+          set -e
+          out=$(cd unixnu && ./unixnu status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["output"])')
+          report="$out/payload/payload.json"
+          python3 - "$report" <<'PY'
+          import json, sys
+          d = json.load(open(sys.argv[1]))
+          ok = True
+          if not d.get('trust_cache_sha256'):
+              print('::error::payload.json has no trust_cache_sha256'); ok = False
+          if not d.get('gpu_addon_sha256'):
+              print('::error::payload.json has no gpu_addon_sha256'); ok = False
+          print('trust_cache_sha256', d.get('trust_cache_sha256'))
+          print('gpu_addon_sha256', d.get('gpu_addon_sha256'))
+          sys.exit(0 if ok else 1)
+          PY
+          mdir -i "$out/payload/payload.img" ::/EFI/UNIXNU/PAYLOADS | tee "$RUNNER_TEMP/payload-list.txt"
+          grep -qi 'kernel.macho.trustcache' "$RUNNER_TEMP/payload-list.txt" \
+            || { echo "::error::kernel.macho.trustcache is not in the payload image"; exit 1; }
+          header=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["header_version"])' "$out/boot/bootimage.json")
+          [ "$header" = "3" ] || { echo "::error::bootimage.json header_version is $header, expected 3"; exit 1; }
+          echo "all four deliverable checks passed"
       - name: Encrypt the boot image
         run: |
           openssl="$(brew --prefix openssl@3)/bin/openssl"
-          kernel=$(find "$GITHUB_WORKSPACE/unixnu/out" -path '*/kernel/kernel.macho' | head -n 1)
-          report=$(find "$GITHUB_WORKSPACE/unixnu/out" -path '*/payload/payload.json' | head -n 1)
-          [ -n "$kernel" ] && [ -n "$report" ] || { echo "::error::prelinked kernel or payload.json not found"; exit 1; }
+          kernel=$(find unixnu/out -path '*/kernel/kernel.macho' | head -n 1)
+          report=$(find unixnu/out -path '*/payload/payload.json' | head -n 1)
+          [ -n "$kernel" ] && [ -n "$report" ] || { echo "::error::kernel or payload.json missing"; exit 1; }
           cd "$RUNNER_TEMP/image"
-          gzip -9 -n -c "$kernel" > kernel.macho.gz
-          cp "$report" payload.json
+          gzip -9 -n -c "$GITHUB_WORKSPACE/$kernel" > kernel.macho.gz
+          cp "$GITHUB_WORKSPACE/$report" payload.json
           for f in boot.img kernel.macho.gz; do shasum -a 256 "$f" | sed "s#  .*#  $f#" > "$f.sha256"; done
           "$openssl" rand -hex 32 > boot.key
           for f in boot.img kernel.macho.gz; do
@@ -149,7 +205,7 @@ jobs:
             -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -in boot.key -out boot.key.enc
           rm -f boot.key boot.img kernel.macho.gz
           mkdir -p "$RUNNER_TEMP/encrypted"
-          mv boot.img.enc kernel.macho.gz.enc boot.key.enc boot.img.sha256 kernel.macho.gz.sha256 boot.json payload.json \
+          mv boot.img.enc kernel.macho.gz.enc boot.key.enc boot.img.sha256 kernel.macho.gz.sha256 payload.json \
             "$RUNNER_TEMP/encrypted/"
       - uses: actions/upload-artifact@v4
         with:
@@ -161,6 +217,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/logs"
           find unixnu/out -path '*/logs/*.log' -size -20M -exec cp {} "$RUNNER_TEMP/logs/" \; 2>/dev/null || true
+          cp "$RUNNER_TEMP/payload-list.txt" "$RUNNER_TEMP/logs/" 2>/dev/null || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
