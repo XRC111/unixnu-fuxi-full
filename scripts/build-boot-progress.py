@@ -14,6 +14,21 @@ ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / 'build/boot-progress'
 OUT.mkdir(parents=True, exist_ok=True)
 
+# sheng-data-skel=1 is the only thing that reads this table, and board.toml does not pass that argument.
+# BootWatchdogPolicy.c includes the header unconditionally, so an empty table is emitted here: the loop body
+# never runs, which is what a boot without the argument does. mkskel.py, the real generator, is not in this
+# tree and reads a 21H16 OS image rather than this board's 21H461 one.
+_skel = OUT / 'DataSkel21H16.h'
+if not _skel.is_file():
+    _skel.write_text("""// Generated for this build: empty Data skeleton table.
+// The real table comes from mkskel.py reading an OS image, and sheng-data-skel=1 is not passed by board.toml.
+#pragma once
+struct sheng_skel_entry { unsigned kind; unsigned mode; unsigned uid, gid; unsigned size; const char *path; const char *data; };
+#define SKEL_PATH(e) ((e)->path)
+#define SKEL_DATA(e) ((e)->data)
+static const struct sheng_skel_entry sheng_skel_21h16[] = {{0, 0, 0, 0, 0, 0, 0}};
+""")
+
 policy_record = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/bsd/DEVELOPMENT/kern_exec.o.json')
                            .read_text().strip().rstrip(','))
 shim_record = json.loads((ROOT / 'build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/osfmk/DEVELOPMENT/startup.o.json')
