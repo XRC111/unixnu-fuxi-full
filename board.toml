@@ -56,7 +56,7 @@ archives = [
   "build-arm-driver.py NativeVirtioBlock --verified-root --verified-root-bundle",
   "build-arm-driver.py NativeRamBlock",
   "build-libpthread-kernel.py",
-  "build-verified-root-probe.py --component os --include-systemos",
+  "build-fuxi-verified-root-policy.py",
   "build-sheng-platform-power.py",
   "build-boot-progress.py",
   "build-native-legacy-display.py",

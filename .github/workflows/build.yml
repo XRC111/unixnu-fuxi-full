@@ -119,17 +119,6 @@ jobs:
             echo "linked kits/NativePrelink -> XnuPrelink"
           fi
           ls -l "$tree/kits" | head -n 20
-      - name: Build the VerifiedRoot policies
-        working-directory: unixnu
-        run: |
-          # archive-11 (build-verified-root-probe.py) reads build/verified-root-os/verification.json, and
-          # nothing in the archive list creates it: build-fuxi-verified-root-policy.py signs the two
-          # unchanged IPSW disk images and emits both policies plus the probe archive. Its default --ipsw-dir
-          # resolves to out/<device>/ipsw/21H461, which the fetch step above populated.
-          out=$(./unixnu status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["output"])')
-          python3 "$out/tree/scripts/build-fuxi-verified-root-policy.py" --ipsw-dir "$out/ipsw/21H461"
-          ls -l "$out/tree/build/verified-root-os" "$out/tree/build/verified-root-systemos"
-
       - name: Build kernel
         working-directory: unixnu
         # GITHUB_TOKEN reaches prepare-xnu-source.py, which restores the DriverKit headers newer xnu omits
