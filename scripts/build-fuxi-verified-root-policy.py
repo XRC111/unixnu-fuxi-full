@@ -16,6 +16,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import plistlib
 import re
 import subprocess
@@ -137,9 +138,21 @@ def make_policy(dmg, compressed_sha256, image_sha256, image_bytes, volume_uuid, 
     print(f'{output.name}: wrote signed policy for {block_count} blocks ({made["image_sha256"][:16]}...)')
 
 
+def default_ipsw_dir() -> Path:
+    """Where the OS and SystemOS disk images are.
+
+    UNIXNU_IPSW_DIR is what the build driver exports, so it wins. Otherwise ROOT is out/<device>/tree and
+    the windows sit in out/<device>/ipsw/<build>/, which is ROOT.parent, not ROOT.parents[1].
+    """
+    override = os.environ.get('UNIXNU_IPSW_DIR')
+    if override:
+        return Path(override)
+    return ROOT.parent / 'ipsw' / BUILD
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--ipsw-dir', type=Path, default=ROOT.parents[1] / 'ipsw' / BUILD,
+    parser.add_argument('--ipsw-dir', type=Path, default=default_ipsw_dir(),
                         help='directory containing 044-76040-038.dmg and 044-76034-038.dmg')
     args = parser.parse_args()
 
