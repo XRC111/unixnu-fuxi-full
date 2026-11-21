@@ -103,14 +103,31 @@ jobs:
       - name: Select the device
         working-directory: unixnu
         run: ./unixnu defconfig fuxi_full_defconfig --device "$GITHUB_WORKSPACE/fuxi"
+      - name: Restore the IPSW windows
+        id: ipsw-cache
+        uses: actions/cache@v4
+        with:
+          # 8.74 GiB of disk images, read out of Apple's CDN on a miss. Keyed on the pins in board.toml, so a
+          # different build id is a different entry rather than a stale hit.
+          path: unixnu/out/fuxi/ipsw/21H461
+          key: ipsw-21H461-${{ hashFiles('fuxi/board.toml') }}
+          enableCrossOsArchive: true
       - name: Fetch the OS and SystemOS windows
         working-directory: unixnu
         run: |
           # 'ipsw fetch', not 'fetch': the plain fetch command updates module submodules and git sources,
           # accepts no component names, and silently does nothing with "OS Cryptex1,SystemOS". The windows
           # land in out/<device>/ipsw/21H461, which is where build-fuxi-verified-root-policy.py reads them.
-          ./unixnu ipsw fetch OS "Cryptex1,SystemOS" --device "$GITHUB_WORKSPACE/fuxi"
-          ls -l "out/fuxi/ipsw/21H461"
+          if [ "${{ steps.ipsw-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "windows restored from cache"
+          else
+            ./unixnu ipsw fetch OS "Cryptex1,SystemOS" --device "$GITHUB_WORKSPACE/fuxi"
+          fi
+          # Either way, the two images have to be there and match their pins.
+          ls -l out/fuxi/ipsw/21H461
+          for name in 044-76040-038.dmg 044-76034-038.dmg; do
+            test -s "out/fuxi/ipsw/21H461/$name" || { echo "::error::$name missing from the windows"; exit 1; }
+          done
       - name: Name the prelink kit the way the builders expect
         working-directory: unixnu
         run: |
@@ -124,6 +141,18 @@ jobs:
             echo "linked kits/NativePrelink -> XnuPrelink"
           fi
           ls -l "$tree/kits" | head -n 20
+      - name: Restore the fetched sources
+        id: feeds-cache
+        uses: actions/cache@v4
+        with:
+          # out/feeds holds the shallow clones of xnu, libplatform, libdispatch, corecrypto and the rest. They
+          # are pinned by feeds.toml and board.toml, so a changed ref is a different key.
+          path: |
+            unixnu/out/feeds
+            unixnu/out/*/tree/.cache/sources
+            unixnu/out/*/tree/.cache/firmware
+          key: feeds-${{ hashFiles('fuxi/feeds.toml', 'fuxi/board.toml') }}
+          enableCrossOsArchive: true
       - name: Build kernel
         working-directory: unixnu
         # GITHUB_TOKEN reaches prepare-xnu-source.py, which restores the DriverKit headers newer xnu omits
