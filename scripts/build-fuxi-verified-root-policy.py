@@ -141,13 +141,14 @@ def make_policy(dmg, compressed_sha256, image_sha256, image_bytes, volume_uuid, 
 def default_ipsw_dir() -> Path:
     """Where the OS and SystemOS disk images are.
 
-    UNIXNU_IPSW_DIR is what the build driver exports, so it wins. Otherwise ROOT is out/<device>/tree and
-    the windows sit in out/<device>/ipsw/<build>/, which is ROOT.parent, not ROOT.parents[1].
+    The fetcher writes them to ctx.out_root / ipsw / build, and ctx.out_root is unixnu/out whether or not a
+    device is selected. ROOT is out/<device>/tree, so the windows are two levels up: ROOT.parents[1].
+    UNIXNU_IPSW_DIR wins when it is set.
     """
     override = os.environ.get('UNIXNU_IPSW_DIR')
     if override:
         return Path(override)
-    return ROOT.parent / 'ipsw' / BUILD
+    return ROOT.parents[1] / 'ipsw' / BUILD
 
 
 def main():
