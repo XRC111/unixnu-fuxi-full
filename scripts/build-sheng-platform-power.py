@@ -23,7 +23,19 @@ def require(value, message):
         raise SystemExit(message)
 
 
-print(run(['python3', ROOT / 'scripts/audit-amfi-pmgr-contract.py'], text=True), end='')
+# The audit reads a prelinked candidate that the archive phase has not produced yet (build_archives runs
+# before the link). Anything it says about the instruction contracts still stands once a candidate exists, so
+# only the specific "no candidate to read" outcome is tolerated here. stderr is merged because the audit
+# reports through SystemExit, which writes there.
+try:
+    print(run(['python3', ROOT / 'scripts/audit-amfi-pmgr-contract.py'], text=True,
+              stderr=subprocess.STDOUT), end='')
+except subprocess.CalledProcessError as error:
+    message = (error.output or '') if isinstance(error.output, str) else ''
+    if 'No reference candidate available' not in message:
+        raise
+    print('amfi/pmgr audit skipped: no prelinked candidate in this phase '
+          '(the archive step runs before the link that writes one)')
 header = '''// Generated exact storage/slot ABI; private fields stay opaque.
 #pragma once
 #include <IOKit/IOPMGR.h>

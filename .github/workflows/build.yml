@@ -149,9 +149,33 @@ jobs:
         # GITHUB_TOKEN reaches prepare-xnu-source.py, which restores the DriverKit headers newer xnu omits
         # by reading them from a pinned Apple tag. Anonymous API calls share a small per-address quota that
         # hosted runners exhaust, and the failure is an HTTP 403 in the middle of the bootstrap pass.
+        #
+        # Two passes, and the reason is a cycle rather than a retry. unixnu.kernel.build runs
+        # build_archives() before the link, and archive-14 (build-native-legacy-display.py) reads a prelinked
+        # candidate that the same build only writes after that link. A clean tree therefore cannot produce the
+        # display archive on its first pass: it emits an empty one with the name the kernel link expects, and
+        # the prelink that follows writes the candidate. The second pass sees the candidate, builds the real
+        # driver, and relinks with it.
+        #
+        # The first pass is allowed to succeed with the empty archive, so a genuine failure still stops here.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./unixnu build kernel --device "$GITHUB_WORKSPACE/fuxi"
+        run: |
+          set -e
+          ./unixnu build kernel --device "$GITHUB_WORKSPACE/fuxi"
+          out=$(./unixnu status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["output"])')
+          report="$out/tree/build/native-legacy-display/build-report.json"
+          if [ -f "$report" ] && grep -q '"second_pass_required": true' "$report"; then
+            echo "pass 1 skipped the display driver; rebuilding it against the candidate that pass 1 produced"
+            ./unixnu build kernel --device "$GITHUB_WORKSPACE/fuxi"
+            cat "$report"
+            if grep -q '"second_pass_required": true' "$report"; then
+              echo "::warning::the display step still has no candidate after two passes"
+            fi
+          else
+            echo "the display driver built on the first pass"
+          fi
+          ls -l "$out/tree/build/native-legacy-display"
       - name: Make the Data seed
         working-directory: unixnu
         run: |

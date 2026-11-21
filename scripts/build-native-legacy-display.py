@@ -18,7 +18,28 @@ try:
 except subprocess.CalledProcessError as e:
     print('legacy display audit skipped (no prelink candidate yet):', e.output if hasattr(e,'output') else e)
 
-audit=json.loads((ROOT/'build/display-analysis/mobile-graphics-legacy-abi.json').read_text())
+# The audit above reports through SystemExit, so its message goes to stderr and the except above cannot see
+# it. Whether the candidate exists is the question that decides, so ask it directly.
+ABI = ROOT / 'build/display-analysis/mobile-graphics-legacy-abi.json'
+if not ABI.is_file():
+    # First pass from scratch: build_archives runs before the link that writes the prelinked candidate this
+    # step reads, so emit an archive with the expected name and no members. The kernel link needs the file to
+    # exist; a second pass, with the candidate present, replaces it with the real driver.
+    import subprocess as _sub
+    archive = OUT / 'libNativeLegacyDisplay.late.a'
+    archive.unlink(missing_ok=True)
+    _sub.run(['xcrun', 'ar', 'rcs', archive], check=True)
+    (OUT / 'build-report.json').write_text(json.dumps({
+        'skipped': 'no prelinked candidate in this phase',
+        'reason': 'build_archives runs before the link that produces one',
+        'archive': archive.name,
+        'archive_bytes': archive.stat().st_size,
+        'second_pass_required': True,
+    }, indent=2) + '\n')
+    print('build-native-legacy-display: no candidate yet, wrote an empty ' + archive.name)
+    raise SystemExit(0)
+
+audit=json.loads(ABI.read_text())
 pure=audit['abstract_slots'];methods=audit['methods']
 header='''// SPDX-License-Identifier: BSD-2-Clause-Patent
 // Opaque ABI storage for the exact original class, not source-level access
