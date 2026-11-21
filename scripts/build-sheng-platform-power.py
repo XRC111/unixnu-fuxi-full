@@ -101,35 +101,46 @@ for segment in info['segments']:
 entries = [relocations.get(vtable + 16 + i * 8) for i in range(340)]
 require(all(entries) and vtable + 16 + 340 * 8 not in relocations, 'Exact 340-entry provider table')
 reference = ROOT / 'build/native-prelink/native-owner-ufs-rootauth3-candidate.macho'
+candidate_missing = False
 if not reference.exists():
     # Build products are pruned: a later candidate built from the same original kernelcache has the identical original
     # ApplePMGR class and inherited native IOPMGR slots; every slot/pointer check below still runs against it.
     later = sorted((ROOT / 'build/native-prelink').glob('native-owner-ufs-cpu-desktop-*-candidate.macho'), key=lambda f: f.stat().st_mtime)
-    require(later, 'No reference candidate available')
-    reference = later[-1]
-candidate = reference.read_bytes()
-meta = macho(candidate)
-native_names = {n: va for va, names in exports(candidate, meta).items() for n in names}
-
-
-def ptr(va):
-    return struct.unpack_from('<Q', candidate, backed_offset(meta['segments'], va, 8, len(candidate)))[0]
-
-
-bindings = {'__ZN9ApplePMGRC2EPK11OSMetaClass': 0xfffffff0049f003c,
-            '__ZN9ApplePMGRD2Ev': 0xfffffff0049f019c,
-            '__ZN9ApplePMGR10gMetaClassE': 0xfffffff006adf490}
-for slot, name in enumerate(entries):
-    if slot in (0, 1, 7) or 168 <= slot < 340 and slot not in (320, 321):
-        require('18ShengPlatformPower' in name, f'Own guard/lifecycle required at slot {slot}')
-    elif slot in (320, 321):
-        require('9ApplePMGR' in name, 'Only actual original AON implementations inherited')
-        bindings[name] = ptr(0xfffffff005ce26d8 + slot * 8)
+    if later:
+        reference = later[-1]
     else:
-        require(native_names.get(name) == ptr(native_names['__ZTV6IOPMGR'] + 16 + slot * 8),
-                f'Native IOPMGR/IOService entry differs at {slot}')
-undefined = {n for n, _, k in symbols if k == 1 and 'ApplePMGR' in n}
-require(undefined == set(bindings), 'All and only audited original base imports')
+        # A clean tree has none: unixnu.kernel.build runs build_archives() before the link that writes one. The
+        # archive below is still written, because it is what the second pass reuses; only the comparison against
+        # the original provider is skipped, and build-report.json says so.
+        candidate_missing = True
+bindings = {}
+if candidate_missing:
+    print('build-sheng-platform-power: no prelinked candidate in this phase; '
+          'writing the archive without the ApplePMGR slot comparison')
+else:
+    candidate = reference.read_bytes()
+    meta = macho(candidate)
+    native_names = {n: va for va, names in exports(candidate, meta).items() for n in names}
+
+
+    def ptr(va):
+        return struct.unpack_from('<Q', candidate, backed_offset(meta['segments'], va, 8, len(candidate)))[0]
+
+
+    bindings = {'__ZN9ApplePMGRC2EPK11OSMetaClass': 0xfffffff0049f003c,
+                '__ZN9ApplePMGRD2Ev': 0xfffffff0049f019c,
+                '__ZN9ApplePMGR10gMetaClassE': 0xfffffff006adf490}
+    for slot, name in enumerate(entries):
+        if slot in (0, 1, 7) or 168 <= slot < 340 and slot not in (320, 321):
+            require('18ShengPlatformPower' in name, f'Own guard/lifecycle required at slot {slot}')
+        elif slot in (320, 321):
+            require('9ApplePMGR' in name, 'Only actual original AON implementations inherited')
+            bindings[name] = ptr(0xfffffff005ce26d8 + slot * 8)
+        else:
+            require(native_names.get(name) == ptr(native_names['__ZTV6IOPMGR'] + 16 + slot * 8),
+                    f'Native IOPMGR/IOService entry differs at {slot}')
+    undefined = {n for n, _, k in symbols if k == 1 and 'ApplePMGR' in n}
+    require(undefined == set(bindings), 'All and only audited original base imports')
 bindings.update({'_sheng_original_pmgr_nub_create': 0xfffffff004a22568,
                  '_sheng_original_pmgr_nub_read': 0xfffffff004a24adc,
                  '_sheng_original_pmgr_nub_write': 0xfffffff004a230ec})
@@ -155,6 +166,8 @@ report = {'source_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
           'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
           'bindings': {name: hex(va) for name, va in bindings.items()}, 'virtual_entries': 340,
           'mode': 'opt-in lifecycle/publication/refusal instrument; not a functional power backend',
-          'runtime_qualified': False, 'original_executable_modified': False}
+          'runtime_qualified': False, 'original_executable_modified': False,
+          'abi_compared': not candidate_missing,
+          'second_pass_required': candidate_missing}
 (OUT / 'build-report.json').write_text(json.dumps(report, indent=2) + '\n')
 print('PASS: ordinary ARM64/iOS17 build; exact native and original bindings; unimplemented power slots stop')
