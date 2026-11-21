@@ -57,6 +57,10 @@ jobs:
           repository: ${{ env.UNIXNU_REPO }}
           ref: ${{ env.UNIXNU_REF }}
           path: unixnu
+          # recursive: Adreno740, GopFramebuffer, AdrenoFirmware, AdrenoPM4, ArmSmmu4K and XnuPrelink are
+          # submodules of the fork, and the archive steps read them directly. Without this the tree has
+          # empty directories where sixteen builders expect sources.
+          submodules: recursive
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
@@ -92,6 +96,19 @@ jobs:
       - name: Fetch the OS and SystemOS windows
         working-directory: unixnu
         run: ./unixnu fetch OS "Cryptex1,SystemOS" --device "$GITHUB_WORKSPACE/fuxi"
+      - name: Name the prelink kit the way the builders expect
+        working-directory: unixnu
+        run: |
+          # UniXNU declares kits/XnuPrelink; the reference port's thirty-four builders import
+          # kits/NativePrelink. A symlink gives both names one checkout instead of two copies that can drift,
+          # and it leaves every script byte-identical to the tree it came from.
+          out=$(./unixnu status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["output"])')
+          tree="$out/tree"
+          if [ -d "$tree/kits/XnuPrelink" ] && [ ! -e "$tree/kits/NativePrelink" ]; then
+            ln -s XnuPrelink "$tree/kits/NativePrelink"
+            echo "linked kits/NativePrelink -> XnuPrelink"
+          fi
+          ls -l "$tree/kits" | head -n 20
       - name: Build kernel
         working-directory: unixnu
         run: ./unixnu build kernel --device "$GITHUB_WORKSPACE/fuxi"
