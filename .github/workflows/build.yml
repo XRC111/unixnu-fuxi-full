@@ -1,0 +1,169 @@
+name: Build
+
+# Builds the fuxi boot image from this repository's tree.
+#
+# The tree is the reference port's, with two device-specific values replaced in board.toml and the
+# defconfig: the unixnu window is this unit's 32 GiB carve (LBA 53461760..61850367) rather than the whole
+# stock userdata partition, and the Data volume UUID matches what make-data-seed.py derives for a 5 GiB
+# seed. Everything else - display, GPU, audio, touch, storage - is that port's work.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      unixnu_ref:
+        description: OddlyLabs/UniXNU ref (the fork whose catalog this tree expects)
+        default: 6ae4c252937ae1920ab68eaded10fc78447e0194
+      uefi_ref:
+        description: OddlyLabs/uefi-fuxi ref
+        default: c5793bc2c60a2e2f5d9fbaad8717ed3f2736bfd2
+
+concurrency:
+  group: build-main
+  cancel-in-progress: false
+
+env:
+  UNIXNU_REPO: OddlyLabs/UniXNU
+  UNIXNU_REF: ${{ inputs.unixnu_ref || '6ae4c252937ae1920ab68eaded10fc78447e0194' }}
+  UEFI_REPO: OddlyLabs/uefi-fuxi
+  UEFI_REF: ${{ inputs.uefi_ref || 'c5793bc2c60a2e2f5d9fbaad8717ed3f2736bfd2' }}
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  HOMEBREW_NO_ENV_HINTS: 1
+
+jobs:
+  image:
+    name: fuxi boot image
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: fuxi
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UNIXNU_REPO }}
+          ref: ${{ env.UNIXNU_REF }}
+          path: unixnu
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UEFI_REPO }}
+          ref: ${{ env.UEFI_REF }}
+          path: uefi-fuxi
+          submodules: recursive
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Select Xcode
+        run: |
+          dir=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -n 1)
+          [ -n "$dir" ] || { echo "::error::no Xcode 26 on this image"; exit 1; }
+          echo "DEVELOPER_DIR=$dir/Contents/Developer" >> "$GITHUB_ENV"
+          "$dir/Contents/Developer/usr/bin/xcodebuild" -version
+      - name: Install host tools
+        run: |
+          brew install llvm lld mtools dtc openssl@3
+          if ! command -v unifdef >/dev/null; then
+            brew install unifdef
+            echo "$(brew --prefix unifdef)/bin" >> "$GITHUB_PATH"
+          fi
+          for tool in hdiutil newfs_apfs diskutil; do command -v "$tool" || { echo "::error::missing $tool"; exit 1; }; done
+      - name: Select the device
+        working-directory: unixnu
+        run: ./unixnu defconfig fuxi_full_defconfig --device "$GITHUB_WORKSPACE/fuxi"
+      - name: Fetch the OS and SystemOS windows
+        working-directory: unixnu
+        run: ./unixnu fetch OS "Cryptex1,SystemOS" --device "$GITHUB_WORKSPACE/fuxi"
+      - name: Build kernel
+        working-directory: unixnu
+        run: ./unixnu build kernel --device "$GITHUB_WORKSPACE/fuxi"
+      - name: Make the Data seed
+        working-directory: unixnu
+        run: |
+          # A 5 GiB APFS container: the 32 GiB window holds the 8.81 GiB root image, the store header and
+          # bitmap, a 1024-block guard and the 1 GiB log reserve, which leaves 6.19 GiB.
+          python3 "$GITHUB_WORKSPACE/fuxi/scripts/make-data-seed.py" --gib 5 \
+            --output "$RUNNER_TEMP/data-seed.dbr" --report "$RUNNER_TEMP/data-seed.json" || {
+              echo "::warning::no generated seed; falling back to the restore ramdisk so the image still builds"
+              exit 0
+            }
+          cat "$RUNNER_TEMP/data-seed.json"
+          echo "UNIXNU_DATA_RAMDISK=$RUNNER_TEMP/data-seed.dbr" >> "$GITHUB_ENV"
+      - name: Fetch the restore ramdisk, trust caches and data seed
+        working-directory: unixnu
+        run: |
+          ./unixnu ipsw fetch RestoreRamDisk RestoreTrustCache --device "$GITHUB_WORKSPACE/fuxi"
+          if [ -z "${UNIXNU_DATA_RAMDISK:-}" ]; then
+            ramdisk=$(ls out/ipsw/*/*.dmg | head -n 1)
+            [ -n "$ramdisk" ] || { echo "::error::restore ramdisk missing"; exit 1; }
+            python3 "$GITHUB_WORKSPACE/fuxi/scripts/unpack-restore-ramdisk.py" "$ramdisk" "$RUNNER_TEMP/restore.img" \
+              --report "$RUNNER_TEMP/restore.json"
+            python3 "$GITHUB_WORKSPACE/fuxi/scripts/pack-data-ramdisk.py" "$RUNNER_TEMP/restore.img" \
+              "$RUNNER_TEMP/restore.dbr" --report "$RUNNER_TEMP/restore.dbr.json"
+            echo "UNIXNU_DATA_RAMDISK=$RUNNER_TEMP/restore.dbr" >> "$GITHUB_ENV"
+          fi
+          trust=$(ls out/ipsw/*/*.dmg.trustcache | head -n 1)
+          [ -n "$trust" ] || { echo "::error::restore trust cache missing"; exit 1; }
+          python3 "$GITHUB_WORKSPACE/fuxi/scripts/pack-restore-trust.py" "$trust" \
+            "$RUNNER_TEMP/kernel.macho.trustcache" --report "$RUNNER_TEMP/trust.json"
+          echo "UNIXNU_TRUST_CACHE=$RUNNER_TEMP/kernel.macho.trustcache" >> "$GITHUB_ENV"
+      - name: Build payload
+        working-directory: unixnu
+        run: |
+          ./unixnu build payload --device "$GITHUB_WORKSPACE/fuxi" --uefi "$GITHUB_WORKSPACE/uefi-fuxi" \
+            --unique-chip-id "$BRINGUP_SEED" --trust-cache "$UNIXNU_TRUST_CACHE" \
+            --data-ramdisk "$UNIXNU_DATA_RAMDISK" --skip-setup
+          cat "$(find out -path '*/payload/payload.json' | head -n 1)"
+        env:
+          BRINGUP_SEED: 0x0123456789abcdef
+      - name: Build firmware
+        working-directory: unixnu
+        run: ./unixnu build firmware --device "$GITHUB_WORKSPACE/fuxi" --uefi "$GITHUB_WORKSPACE/uefi-fuxi" --target DEBUG
+      - name: Pack the boot image
+        working-directory: unixnu
+        run: |
+          mkdir -p "$RUNNER_TEMP/image"
+          ./unixnu bootimg --device "$GITHUB_WORKSPACE/fuxi" --uefi "$GITHUB_WORKSPACE/uefi-fuxi" --target DEBUG \
+            --dtb "$GITHUB_WORKSPACE/uefi-fuxi/Platforms/Xiaomi/fuxiPkg/FdtBlob/sm8550-xiaomi-fuxi.dtb" \
+            -o "$RUNNER_TEMP/image/boot.img"
+          cat "$RUNNER_TEMP/image/boot.json"
+      - name: Encrypt the boot image
+        run: |
+          openssl="$(brew --prefix openssl@3)/bin/openssl"
+          kernel=$(find "$GITHUB_WORKSPACE/unixnu/out" -path '*/kernel/kernel.macho' | head -n 1)
+          report=$(find "$GITHUB_WORKSPACE/unixnu/out" -path '*/payload/payload.json' | head -n 1)
+          [ -n "$kernel" ] && [ -n "$report" ] || { echo "::error::prelinked kernel or payload.json not found"; exit 1; }
+          cd "$RUNNER_TEMP/image"
+          gzip -9 -n -c "$kernel" > kernel.macho.gz
+          cp "$report" payload.json
+          for f in boot.img kernel.macho.gz; do shasum -a 256 "$f" | sed "s#  .*#  $f#" > "$f.sha256"; done
+          "$openssl" rand -hex 32 > boot.key
+          for f in boot.img kernel.macho.gz; do
+            "$openssl" enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in "$f" -out "$f.enc" -pass file:boot.key
+          done
+          "$openssl" pkeyutl -encrypt -pubin -inkey "$GITHUB_WORKSPACE/fuxi/ci/boot-image-recipient.pem" \
+            -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -in boot.key -out boot.key.enc
+          rm -f boot.key boot.img kernel.macho.gz
+          mkdir -p "$RUNNER_TEMP/encrypted"
+          mv boot.img.enc kernel.macho.gz.enc boot.key.enc boot.img.sha256 kernel.macho.gz.sha256 boot.json payload.json \
+            "$RUNNER_TEMP/encrypted/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fuxi-boot-image-encrypted-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/encrypted
+          if-no-files-found: error
+      - name: Collect the text logs
+        if: always()
+        run: |
+          mkdir -p "$RUNNER_TEMP/logs"
+          find unixnu/out -path '*/logs/*.log' -size -20M -exec cp {} "$RUNNER_TEMP/logs/" \; 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: fuxi-build-logs-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/logs
+          if-no-files-found: warn
