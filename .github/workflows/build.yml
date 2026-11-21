@@ -32,9 +32,11 @@ concurrency:
 
 env:
   UNIXNU_REPO: OddlyLabs/UniXNU
-  UNIXNU_REF: ${{ inputs.unixnu_ref || '6ae4c252937ae1920ab68eaded10fc78447e0194' }}
+  # github.event.inputs, not inputs: the inputs context is only defined for a workflow_dispatch run, and a
+  # push trigger made the whole file invalid when it was referenced at top level.
+  UNIXNU_REF: ${{ github.event.inputs.unixnu_ref || '6ae4c252937ae1920ab68eaded10fc78447e0194' }}
   UEFI_REPO: OddlyLabs/uefi-fuxi
-  UEFI_REF: ${{ inputs.uefi_ref || 'c5793bc2c60a2e2f5d9fbaad8717ed3f2736bfd2' }}
+  UEFI_REF: ${{ github.event.inputs.uefi_ref || 'c5793bc2c60a2e2f5d9fbaad8717ed3f2736bfd2' }}
   HOMEBREW_NO_AUTO_UPDATE: 1
   HOMEBREW_NO_INSTALL_CLEANUP: 1
   HOMEBREW_NO_ENV_HINTS: 1
@@ -168,25 +170,8 @@ jobs:
         run: |
           set -e
           out=$(cd unixnu && ./unixnu status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["output"])')
-          report="$out/payload/payload.json"
-          python3 - "$report" <<'PY'
-          import json, sys
-          d = json.load(open(sys.argv[1]))
-          ok = True
-          if not d.get('trust_cache_sha256'):
-              print('::error::payload.json has no trust_cache_sha256'); ok = False
-          if not d.get('gpu_addon_sha256'):
-              print('::error::payload.json has no gpu_addon_sha256'); ok = False
-          print('trust_cache_sha256', d.get('trust_cache_sha256'))
-          print('gpu_addon_sha256', d.get('gpu_addon_sha256'))
-          sys.exit(0 if ok else 1)
-          PY
-          mdir -i "$out/payload/payload.img" ::/EFI/UNIXNU/PAYLOADS | tee "$RUNNER_TEMP/payload-list.txt"
-          grep -qi 'kernel.macho.trustcache' "$RUNNER_TEMP/payload-list.txt" \
-            || { echo "::error::kernel.macho.trustcache is not in the payload image"; exit 1; }
-          header=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["header_version"])' "$out/boot/bootimage.json")
-          [ "$header" = "3" ] || { echo "::error::bootimage.json header_version is $header, expected 3"; exit 1; }
-          echo "all four deliverable checks passed"
+          python3 "$GITHUB_WORKSPACE/fuxi/scripts/check-deliverable.py" \
+            "$out/payload/payload.json" "$out/payload/payload.img" "$out/boot/bootimage.json"
       - name: Encrypt the boot image
         run: |
           openssl="$(brew --prefix openssl@3)/bin/openssl"
