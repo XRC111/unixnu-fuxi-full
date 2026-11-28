@@ -6,7 +6,9 @@ import json
 import os
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
+import time
 from pathlib import Path
 
 
@@ -124,8 +126,23 @@ def ensure_fuxi_firmware(root, local, files):
                 'User-Agent': 'fuxi-offline-adreno-audit',
                 'Accept': 'application/vnd.github.raw+json',
             })
-            with urllib.request.urlopen(request, timeout=30) as response:
-                blob = response.read()
+            token = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
+            if token and urllib.parse.urlsplit(url).hostname == 'api.github.com':
+                request.add_header('Authorization', f'Bearer {token}')
+            # This is the third GitHub consumer in the same job, after prepare-xnu-source and the Linux
+            # source fetch, so its anonymous quota is already low. Retry the transient codes; the blob
+            # identity check below still runs on every attempt.
+            for attempt in range(5):
+                try:
+                    with urllib.request.urlopen(request, timeout=30) as response:
+                        blob = response.read()
+                    break
+                except urllib.error.HTTPError as error:
+                    if error.code not in (429, 500, 502, 503, 504) or attempt == 4:
+                        raise
+                    delay = 2 * (2 ** attempt)
+                    print(f'retrying firmware {key} after HTTP {error.code} in {delay}s', flush=True)
+                    time.sleep(delay)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(blob)
         if (len(blob) != expected['bytes'] or
