@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import urllib.parse
 import urllib.request
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 pins = json.loads((ROOT / 'scripts/data/adreno-inputs.json').read_text())
@@ -24,8 +25,20 @@ def fetch(item):
         request = urllib.request.Request(url, headers={'User-Agent': 'sheng-offline-adreno-audit'})
         if TOKEN and urllib.parse.urlsplit(url).hostname in ('api.github.com', 'raw.githubusercontent.com'):
             request.add_header('Authorization', f'Bearer {TOKEN}')
-        with urllib.request.urlopen(request, timeout=30) as response:
-            data = response.read()
+        # raw.githubusercontent.com and the Mesa mirror return 503 under load. Only retry the transient
+        # codes; a 404 is a genuinely wrong pin and should fail at once. The SHA check below still applies
+        # to every attempt, so a retry can never write a wrong body.
+        for attempt in range(5):
+            try:
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    data = response.read()
+                break
+            except urllib.error.HTTPError as error:
+                if error.code not in (429, 500, 502, 503, 504) or attempt == 4:
+                    raise
+                delay = 2 * (2 ** attempt)
+                print(f'retrying {path.name} after HTTP {error.code} in {delay}s', flush=True)
+                time.sleep(delay)
         if blob:
             data = base64.b64decode(json.loads(data)['content'])
         elif encoding == 'gitiles-base64':
