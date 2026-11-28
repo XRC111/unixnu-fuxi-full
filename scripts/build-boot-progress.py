@@ -67,7 +67,9 @@ def compile_like(record, source, destination, extra):
 
 policy_source = ROOT / 'kits/sheng/BootWatchdogPolicy.c'
 policy_obj = compile_like(policy_record, policy_source, OUT / 'BootWatchdogPolicy.o',
-                          ['-mgeneral-regs-only', '-Wall', '-Wextra', '-Werror'])
+                          # -I OUT is what makes the generated DataSkel21H16.h visible: the header is written
+                          # next to the objects and BootWatchdogPolicy.c includes it by bare name.
+                          ['-mgeneral-regs-only', '-Wall', '-Wextra', '-Werror', '-I', str(OUT)])
 progress_source = ROOT / 'kits/sheng/BootProgress.c'
 progress_obj = compile_like(shim_record, progress_source, OUT / 'BootProgress.o',
                             ['-mgeneral-regs-only', '-Wall', '-Wextra', '-Werror',
