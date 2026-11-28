@@ -1,11 +1,17 @@
 {
   "board": {
-    "dtb_sha256": "0590a46ca03be8de4cdf273f4ba4bc884e41555e771f55d2601ba9df121b5d5c",
-    "dtb_bytes": 815093,
+    "dtb_sha256": "64ec3f8394f75e111b019efc7a3d7a21abcc746a034573b762ec237c208f9911",
+    "dtb_bytes": 801360,
     "gpu_node": "/soc/qcom,kgsl-3d0@3d00000",
     "gmu_node": "/soc/qcom,gmu@3d69000",
     "command_db_node": "/reserved-memory/aop_cmd_db_region@81c60000",
-    "gpu_windows": ["gmu", "rscc", "gmu_pdc", "kgsl_3d0_reg_memory", "cx_misc"]
+    "gpu_windows": [
+      "gmu",
+      "rscc",
+      "gmu_pdc",
+      "kgsl_3d0_reg_memory",
+      "cx_misc"
+    ]
   },
   "firmware": {
     "repository": "https://github.com/ljhhkx529/fuxi-firmware",
