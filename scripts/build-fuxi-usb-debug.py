@@ -82,8 +82,7 @@ run([sys.executable, module / 'scripts/build.py', '--compile-record', matches[0]
 run([sys.executable, module / 'tests/check_xnu.py', '--xnu', root / '.cache/xnu-work',
      '--records', records, '--archive', out / 'libQcomXnuUsbDebug.a', '--nm', llvm / 'llvm-nm',
      '--output', xnu_check])
-for name in ('check-report.json', 'xnu-check-report.json'):
-    directory = root / ('.cache/fuxi-qud-model-check' if name == 'check-report.json' else '.cache/fuxi-qud-xnu-check')
+for name, directory in (('check-report.json', model_check), ('xnu-check-report.json', xnu_check)):
     print((directory / name).read_text())
 print((out / 'build-report.json').read_text())
 print('PASS: fuxi QcomXnuUsbDebug archive, models and six-unit enabled/disabled XNU integration')

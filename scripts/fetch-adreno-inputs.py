@@ -4,11 +4,16 @@ import base64
 import concurrent.futures
 import hashlib
 import json
+import os
 from pathlib import Path
+import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 pins = json.loads((ROOT / 'scripts/data/adreno-inputs.json').read_text())
+# The same runner IP already spends its anonymous GitHub API quota on prepare-xnu-source.py. A 403 here used
+# to be reported as a pinned-input mismatch, so send a token when one is available and only to GitHub hosts.
+TOKEN = os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
 
 
 def fetch(item):
@@ -17,6 +22,8 @@ def fetch(item):
         data = path.read_bytes()
     else:
         request = urllib.request.Request(url, headers={'User-Agent': 'sheng-offline-adreno-audit'})
+        if TOKEN and urllib.parse.urlsplit(url).hostname in ('api.github.com', 'raw.githubusercontent.com'):
+            request.add_header('Authorization', f'Bearer {TOKEN}')
         with urllib.request.urlopen(request, timeout=30) as response:
             data = response.read()
         if blob:
