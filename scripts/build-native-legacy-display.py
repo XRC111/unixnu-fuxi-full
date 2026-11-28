@@ -42,6 +42,11 @@ if not ABI.is_file():
         'archive': archive.name,
         'archive_bytes': archive.stat().st_size,
         'second_pass_required': True,
+        # build-xnu-4k-baseline.sh checks these two before linking, so the placeholder has to carry them
+        # too: the archive hash must match its own bytes, and the source map can be empty because this pass
+        # compiled none of the driver's sources.
+        'archive_sha256': hashlib.sha256(archive.read_bytes()).hexdigest(),
+        'source_sha256': {},
     }, indent=2) + '\n')
     print('build-native-legacy-display: no candidate yet, wrote an empty ' + archive.name)
     raise SystemExit(0)
