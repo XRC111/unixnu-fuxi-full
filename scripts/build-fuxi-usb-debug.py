@@ -50,7 +50,7 @@ def run(arguments, host=False):
     print(result.stdout, end='')
     if result.returncode:
         print(result.stderr, end='')
-        for base in (out, root / '.cache/fuxi-qud-xnu-check'):
+        for base in (out, xnu_check):
             if base.is_dir():
                 for log in base.glob('*.log'):
                     content = log.read_text(errors='replace')
@@ -58,13 +58,22 @@ def run(arguments, host=False):
                         print(log.name, content[-6500:])
         raise SystemExit(result.returncode)
 
-# The upstream checks require a new output directory on every run.
-for previous in (root / '.cache/fuxi-qud-model-check', out, root / '.cache/fuxi-qud-xnu-check'):
+# The upstream checks require a new output directory on every run. Their screenshot test binds an AF_UNIX
+# socket inside the output directory, and macOS caps that path at 104 bytes; under a GitHub workspace the
+# tree path alone exceeds it. Put the two check scratch directories under TMPDIR so the socket path stays
+# short, while the real build output (`out`) stays where it is.
+import tempfile as _tempfile
+# macOS TMPDIR is already a long /var/folders/... path; /tmp keeps the AF_UNIX socket far under
+# the 104-byte limit.
+_scratch = Path('/tmp') / 'qud'
+model_check = _scratch / 'model'
+xnu_check = _scratch / 'xnu'
+for previous in (model_check, out, xnu_check):
     if previous.exists():
         previous.rename(previous.with_name(previous.name + '.previous-' + str(time.time_ns())))
 
 run([sys.executable, module / 'tests/check.py', '--target-clang', llvm / 'clang',
-     '--output', root / '.cache/fuxi-qud-model-check'], host=True)
+     '--output', model_check], host=True)
 matches = list(records.glob('**/pe_kprintf.o.json'))
 if len(matches) != 1:
     raise SystemExit('missing or ambiguous actual PE compile record')
@@ -72,7 +81,7 @@ run([sys.executable, module / 'scripts/build.py', '--compile-record', matches[0]
      '--soc', 'soc/FuxiSm8550.h', '--ar', llvm / 'llvm-ar', '--nm', llvm / 'llvm-nm', '--output', out])
 run([sys.executable, module / 'tests/check_xnu.py', '--xnu', root / '.cache/xnu-work',
      '--records', records, '--archive', out / 'libQcomXnuUsbDebug.a', '--nm', llvm / 'llvm-nm',
-     '--output', root / '.cache/fuxi-qud-xnu-check'])
+     '--output', xnu_check])
 for name in ('check-report.json', 'xnu-check-report.json'):
     directory = root / ('.cache/fuxi-qud-model-check' if name == 'check-report.json' else '.cache/fuxi-qud-xnu-check')
     print((directory / name).read_text())

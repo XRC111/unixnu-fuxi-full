@@ -107,10 +107,13 @@ jobs:
         id: ipsw-cache
         uses: actions/cache@v4
         with:
-          # 8.74 GiB of disk images, read out of Apple's CDN on a miss. Keyed on the pins in board.toml, so a
-          # different build id is a different entry rather than a stale hit.
+          # 8.74 GiB of disk images, read out of Apple's CDN on a miss. Keyed on the IPSW identity, not on
+          # board.toml: the windows depend only on the build id and the two pinned image hashes, while
+          # board.toml also carries the partition layout and archive list that change on almost every commit.
+          # Hashing the whole file made each of those commits re-download the windows. Bump this suffix only
+          # when the IPSW or its pins actually change.
           path: unixnu/out/ipsw/21H461
-          key: ipsw-21H461-${{ hashFiles('fuxi/board.toml') }}
+          key: ipsw-21H461-3f99b859-b4908cde-v1
           enableCrossOsArchive: true
       - name: Fetch the OS and SystemOS windows
         working-directory: unixnu
