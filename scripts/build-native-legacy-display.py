@@ -23,12 +23,19 @@ except subprocess.CalledProcessError as e:
 ABI = ROOT / 'build/display-analysis/mobile-graphics-legacy-abi.json'
 if not ABI.is_file():
     # First pass from scratch: build_archives runs before the link that writes the prelinked candidate this
-    # step reads, so emit an archive with the expected name and no members. The kernel link needs the file to
-    # exist; a second pass, with the candidate present, replaces it with the real driver.
+    # step reads, so emit an archive with the expected name. The kernel link needs the file to exist, and ar
+    # refuses an archive with no members, so a tiny object with one harmless symbol is compiled into it. A
+    # second pass, with the candidate present, replaces it with the real driver.
     import subprocess as _sub
     archive = OUT / 'libNativeLegacyDisplay.late.a'
+    placeholder_c = OUT / 'placeholder.c'
+    placeholder_o = OUT / 'placeholder.o'
+    placeholder_c.write_text('void native_legacy_display_placeholder(void) {}\n')
+    sdk = _sub.check_output(['xcrun', '--sdk', 'iphoneos', '--show-sdk-path'], text=True).strip()
+    _sub.run(['xcrun', 'clang', '-target', 'arm64-apple-ios17.0', '-isysroot', sdk,
+              '-c', placeholder_c, '-o', placeholder_o], check=True)
     archive.unlink(missing_ok=True)
-    _sub.run(['xcrun', 'ar', 'rcs', archive], check=True)
+    _sub.run(['xcrun', 'ar', 'rcs', archive, placeholder_o], check=True)
     (OUT / 'build-report.json').write_text(json.dumps({
         'skipped': 'no prelinked candidate in this phase',
         'reason': 'build_archives runs before the link that produces one',
